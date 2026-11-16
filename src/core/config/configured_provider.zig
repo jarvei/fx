@@ -4,7 +4,7 @@ const testing_allocator = @import("../shared/testing_allocator.zig");
 const text_utils = @import("../shared/text_utils.zig");
 const Allocator = std.mem.Allocator;
 
-const max_providers = 32;
+pub const max_providers = 32; // Fork: public so the picker can size its column.
 const max_models = 256;
 pub const max_id_bytes = 64;
 pub const max_model_bytes = 1024;

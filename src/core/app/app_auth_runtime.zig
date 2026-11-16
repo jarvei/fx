@@ -1253,7 +1253,7 @@ pub fn Runtime(comptime App: type) type {
             })) {
                 .prepare => {},
                 .no_change => {
-                    const body = try app.alloc.print("Already using {s}.", .{provider_catalog.label(target)});
+                    const body = try app.alloc.print("Already using {s}.", .{provider_catalog.displayName(&target)});
                     defer app.alloc.free(body);
                     try app.writeDomainNotice(.{
                         .topic = "provider",
@@ -1497,7 +1497,7 @@ pub fn Runtime(comptime App: type) type {
 
             const body = try app.alloc.print(
                 "Switched to {s} with {s}.",
-                .{ provider_catalog.label(target), provider_runtime.modelOf(app, agent) },
+                .{ provider_catalog.displayName(&target), provider_runtime.modelOf(app, agent) },
             );
             defer app.alloc.free(body);
             if (comptime @hasDecl(App, "persistRuntimePreferences")) {

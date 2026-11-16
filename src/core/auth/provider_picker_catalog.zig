@@ -6,9 +6,8 @@
 //! a masked entry field and never reaches the composer.
 
 const std = @import("std");
-const host_target = @import("../hosts/target.zig");
 const model_provider = @import("../config/model_provider.zig");
-const provider_catalog = @import("provider_catalog.zig");
+const configured_provider = @import("../config/configured_provider.zig");
 const types = @import("../shared/types.zig");
 
 /// How a provider is authenticated. Subscription providers expose no methods;
@@ -20,7 +19,7 @@ pub const Method = enum {
     api_key,
 };
 
-pub const max_provider_options = provider_catalog.entries.len;
+pub const max_provider_options = configured_provider.max_providers;
 const max_method_options = 2;
 /// The team column lists at most this many teams; accounts beyond it see the
 /// first 128 and can still change teams through the sign-in flow.
@@ -109,17 +108,21 @@ pub fn parseMethod(value: []const u8) ?Method {
     return null;
 }
 
-fn providerVisible(id: model_provider.ProviderId) bool {
-    if (comptime host_target.is_wasm) return id != .grok;
-    return true;
-}
+/// The row an empty profile shows where the list would be. It is informational:
+/// nothing can be committed from it, because a connection only exists once the
+/// settings declare one.
+pub const no_connections_label = "no-connections";
+pub const no_connections_annotation = "add one under \"providers\" in ~/.fx/settings.json";
 
-/// Writes the visible provider slugs into `out` and returns how many landed.
-pub fn providerOptions(out: *[max_provider_options][]const u8) usize {
+/// Writes the provider names this build offers into `out` and returns how many
+/// landed. They are the connections the profile's settings declare, in the
+/// settings' order; the factory accounts (Vercel, Codex, Grok) are not offered.
+/// Fork: upstream lists `provider_catalog.entries` here.
+pub fn providerOptions(out: *[max_provider_options][]const u8, registry: *const configured_provider.Registry) usize {
     var count: usize = 0;
-    for (&provider_catalog.entries) |*entry| {
-        if (!providerVisible(entry.id)) continue;
-        out[count] = entry.slug;
+    for (registry.definitions) |*definition| {
+        if (count == out.len) break;
+        out[count] = definition.id;
         count += 1;
     }
     return count;
@@ -141,16 +144,29 @@ pub fn methodMatchesSource(method: Method, source: types.CredentialSource) bool 
     };
 }
 
-test "provider options expose the catalog slugs the composer accepts" {
+test "provider options expose the configured connections the composer accepts" {
+    var registry: configured_provider.Registry = .{
+        .definitions = &.{
+            .{ .id = "deepseek", .protocol = .@"openai-chat-completions", .base_url = "https://api.deepseek.com/v1", .auth = .{ .bearer = "DEEPSEEK_API_KEY" } },
+            .{ .id = "unlid", .protocol = .@"openai-chat-completions", .base_url = "https://api.unlid.ai/v1", .auth = .{ .bearer = "UNLID_API_KEY" } },
+        },
+    };
     var buf: [max_provider_options][]const u8 = undefined;
-    const count = providerOptions(&buf);
+    const count = providerOptions(&buf, &registry);
 
-    try std.testing.expect(count >= 2);
-    try std.testing.expectEqualStrings("vercel", buf[0]);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqualStrings("deepseek", buf[0]);
+    try std.testing.expectEqualStrings("unlid", buf[1]);
     for (buf[0..count]) |slug| {
-        try std.testing.expect(provider_catalog.parse(slug) != null);
+        try std.testing.expect(model_provider.parse(slug) != null);
         try std.testing.expect(std.mem.findScalar(u8, slug, ' ') == null);
     }
+}
+
+test "provider options are empty for a profile with no connections" {
+    const registry: configured_provider.Registry = .{};
+    var buf: [max_provider_options][]const u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), providerOptions(&buf, &registry));
 }
 
 test "only the gateway offers a method column" {

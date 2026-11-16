@@ -16,6 +16,7 @@ const auth_runtime = @import("../auth/auth_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
 const provider_catalog = @import("../auth/provider_catalog.zig");
 const provider_picker_catalog = @import("../auth/provider_picker_catalog.zig");
+const configured_provider = @import("../config/configured_provider.zig");
 const model_provider = @import("../config/model_provider.zig");
 const picker_state = @import("../input/picker_state.zig");
 const list_window = @import("../shared/list_window.zig");
@@ -83,13 +84,28 @@ pub fn Runtime(comptime App: type) type {
             var count: usize = 0;
             switch (query.stage) {
                 .provider => {
-                    var slugs: [provider_picker_catalog.max_provider_options][]const u8 = undefined;
-                    count = provider_picker_catalog.providerOptions(&slugs);
-                    for (slugs[0..count], 0..) |slug, i| {
-                        column.labels[i] = slug;
-                        const id = provider_catalog.parse(slug) orelse .gateway;
-                        column.annotations[i] = if (id.eql(active_provider) and
-                            model_provider.authorizesCredential(id, app.auth.credentialSource())) "current" else "";
+                    if (configuredProviders(app)) |registry| {
+                        var slugs: [provider_picker_catalog.max_provider_options][]const u8 = undefined;
+                        const names = provider_picker_catalog.providerOptions(&slugs, registry);
+                        for (slugs[0..names], 0..) |slug, i| {
+                            column.labels[i] = slug;
+                            // Every row in range gets an annotation: the renderer
+                            // reads annotations[0..count], and this buffer starts
+                            // undefined.
+                            column.annotations[i] = "";
+                            const id = providerFor(app, slug) orelse continue;
+                            if (id.eql(active_provider) and
+                                model_provider.authorizesCredential(id, app.auth.credentialSource()))
+                            {
+                                column.annotations[i] = "current";
+                            }
+                        }
+                        count = names;
+                        if (count == 0) {
+                            column.labels[0] = provider_picker_catalog.no_connections_label;
+                            column.annotations[0] = provider_picker_catalog.no_connections_annotation;
+                            count = 1;
+                        }
                     }
                 },
                 .method => {
@@ -243,7 +259,7 @@ pub fn Runtime(comptime App: type) type {
             const selected = exactLabel(query.query, &column) orelse return false;
             switch (query.stage) {
                 .provider => {
-                    const provider = provider_catalog.parse(selected) orelse return false;
+                    const provider = providerFor(app, selected) orelse return false;
                     if (provider_picker_catalog.providerMethods(provider).len == 0) return false;
                 },
                 .method => {
@@ -275,7 +291,7 @@ pub fn Runtime(comptime App: type) type {
 
             switch (query.stage) {
                 .provider => {
-                    const provider = provider_catalog.parse(selected) orelse return false;
+                    const provider = providerFor(app, selected) orelse return false;
                     if (provider_picker_catalog.providerMethods(provider).len == 0) {
                         try commit(app, .{ .provider = provider });
                         return true;
@@ -346,6 +362,24 @@ pub fn Runtime(comptime App: type) type {
                     return true;
                 },
             }
+        }
+
+        /// The connections the profile's settings declare, when the host keeps
+        /// them; a host without a provider selection has none to offer.
+        /// Fork: upstream builds its column from the auth provider catalog.
+        fn configuredProviders(app: *App) ?*const configured_provider.Registry {
+            if (comptime !@hasField(App, "provider_selection")) return null;
+            return &app.provider_selection.definitions;
+        }
+
+        /// The connection a picker row names: a provider the profile's settings
+        /// declare, bound so the choice can be saved to the session and the
+        /// settings. Names the settings do not declare resolve to nothing.
+        fn providerFor(app: *App, name: []const u8) ?model_provider.ProviderId {
+            const parsed = model_provider.parse(name) orelse return null;
+            if (parsed != .configured) return null;
+            const registry = configuredProviders(app) orelse return null;
+            return parsed.bind(registry.*) catch null;
         }
 
         /// Opens one of the api-key stages under the `api-key` argument: the
@@ -603,8 +637,9 @@ pub fn Runtime(comptime App: type) type {
         }
 
         fn syncProviderSelection(app: *App, slug: []const u8) void {
+            const registry = configuredProviders(app) orelse return;
             var slugs: [provider_picker_catalog.max_provider_options][]const u8 = undefined;
-            const count = provider_picker_catalog.providerOptions(&slugs);
+            const count = provider_picker_catalog.providerOptions(&slugs, registry);
             for (slugs[0..count], 0..) |candidate, index| {
                 if (!std.mem.eql(u8, candidate, slug)) continue;
                 app.input_runtime.picker.provider_column_index = index;
@@ -646,12 +681,19 @@ test "exact label matching ignores case and surrounding spaces" {
     try std.testing.expect(exactLabel("", &column) == null);
 }
 
-test "model provider identity stays aligned with the catalog slugs" {
+test "provider options carry the configured connections' names" {
+    const definitions = [_]configured_provider.Definition{
+        .{ .id = "deepseek", .protocol = .@"openai-chat-completions", .base_url = "https://api.deepseek.com/v1", .auth = .{ .bearer = "DEEPSEEK_API_KEY" } },
+        .{ .id = "unlid", .protocol = .@"openai-chat-completions", .base_url = "https://api.unlid.ai/v1", .auth = .{ .bearer = "UNLID_API_KEY" } },
+    };
+    const registry: configured_provider.Registry = .{ .definitions = &definitions };
     var slugs: [provider_picker_catalog.max_provider_options][]const u8 = undefined;
-    const count = provider_picker_catalog.providerOptions(&slugs);
+    const count = provider_picker_catalog.providerOptions(&slugs, &registry);
+    try std.testing.expectEqual(@as(usize, 2), count);
     for (slugs[0..count]) |slug| {
-        const id: model_provider.ProviderId = provider_catalog.parse(slug).?;
-        try std.testing.expectEqualStrings(slug, provider_catalog.find(id).slug);
+        const parsed = model_provider.parse(slug) orelse return error.TestUnexpectedResult;
+        const id = try parsed.bind(registry);
+        try std.testing.expectEqualStrings(slug, id.label());
     }
 }
 
@@ -740,24 +782,37 @@ fn columnFor(app: *ColumnTestApp, stage: ProviderPickerStage, query: []const u8)
     return column;
 }
 
-test "provider column lists every provider and marks the active one" {
+/// The two connections the picker tests offer, in settings order.
+const test_provider_definitions = [_]configured_provider.Definition{
+    .{ .id = "deepseek", .protocol = .@"openai-chat-completions", .base_url = "https://api.deepseek.com/v1", .auth = .{ .bearer = "DEEPSEEK_API_KEY" } },
+    .{ .id = "unlid", .protocol = .@"openai-chat-completions", .base_url = "https://api.unlid.ai/v1", .auth = .{ .bearer = "UNLID_API_KEY" } },
+};
+
+fn installTestProviders(app: *ColumnTestApp) void {
+    app.provider_selection.definitions = .{ .definitions = &test_provider_definitions };
+}
+
+test "provider column lists every configured connection and marks the active one" {
     const alloc = std.testing.allocator;
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
-    app.auth.source = .ai_gateway_api_key;
+    installTestProviders(&app);
+    app.provider_selection.active_provider = try model_provider.parse("unlid").?.bind(app.provider_selection.definitions);
+    app.auth.source = .configured;
 
     const column = columnFor(&app, .provider, "");
-    try std.testing.expect(column.count >= 2);
-    try std.testing.expectEqualStrings("vercel", column.labels[0]);
-    try std.testing.expectEqualStrings("current", column.annotations[0]);
-    for (column.annotations[1..column.count]) |annotation| {
-        try std.testing.expectEqualStrings("", annotation);
-    }
+    try std.testing.expectEqual(@as(usize, 2), column.count);
+    try std.testing.expectEqualStrings("deepseek", column.labels[0]);
+    try std.testing.expectEqualStrings("", column.annotations[0]);
+    try std.testing.expectEqualStrings("unlid", column.labels[1]);
+    try std.testing.expectEqualStrings("current", column.annotations[1]);
 }
 
 test "provider column requires matching authentication for a current annotation" {
     var app = ColumnTestApp.init(std.testing.allocator);
     defer app.deinit();
+    installTestProviders(&app);
+    app.provider_selection.active_provider = try model_provider.parse("unlid").?.bind(app.provider_selection.definitions);
     for ([_]?credentials.Source{ null, .chatgpt_subscription }) |source| {
         app.auth.source = source;
         const column = columnFor(&app, .provider, "");
@@ -766,41 +821,65 @@ test "provider column requires matching authentication for a current annotation"
         }
     }
     app.auth.source = .host_managed;
-    try std.testing.expectEqualStrings("current", columnFor(&app, .provider, "").annotations[0]);
+    try std.testing.expectEqualStrings("current", columnFor(&app, .provider, "").annotations[1]);
+}
+
+test "an empty profile offers the row that says where connections come from" {
+    var app = ColumnTestApp.init(std.testing.allocator);
+    defer app.deinit();
+
+    const column = columnFor(&app, .provider, "");
+    try std.testing.expectEqual(@as(usize, 1), column.count);
+    try std.testing.expectEqualStrings(provider_picker_catalog.no_connections_label, column.labels[0]);
+    try std.testing.expectEqualStrings(provider_picker_catalog.no_connections_annotation, column.annotations[0]);
+}
+
+test "provider resolution binds a declared connection and refuses anything else" {
+    var app = ColumnTestApp.init(std.testing.allocator);
+    defer app.deinit();
+    installTestProviders(&app);
+
+    const bound = Runtime(ColumnTestApp).providerFor(&app, "unlid") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("unlid", bound.label());
+    try std.testing.expect(bound.configured.binding != null);
+    try std.testing.expect(Runtime(ColumnTestApp).providerFor(&app, "missing") == null);
+    try std.testing.expect(Runtime(ColumnTestApp).providerFor(&app, "gateway") == null);
 }
 
 test "provider column narrows to what was typed" {
     const alloc = std.testing.allocator;
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
+    installTestProviders(&app);
 
-    const column = columnFor(&app, .provider, "gro");
+    const column = columnFor(&app, .provider, "unl");
     try std.testing.expectEqual(@as(usize, 1), column.count);
-    try std.testing.expectEqualStrings("grok", column.labels[0]);
+    try std.testing.expectEqualStrings("unlid", column.labels[0]);
 }
 
 test "provider picker loading preserves query and selection instead of exposing cached options" {
     const alloc = std.testing.allocator;
     var app = ColumnTestApp.init(alloc);
     defer app.deinit();
+    installTestProviders(&app);
     app.auth.inventory_refresh_active = true;
-    try app.input_runtime.textReplacementState().replace(alloc, "/provider co");
+    try app.input_runtime.textReplacementState().replace(alloc, "/provider un");
     app.input_runtime.picker.provider_column_index = 2;
 
-    const pending = columnFor(&app, .provider, "co");
+    const pending = columnFor(&app, .provider, "un");
     try std.testing.expectEqual(@as(usize, 1), pending.count);
     try std.testing.expectEqualStrings("checking credentials...", pending.labels[0]);
     try Runtime(ColumnTestApp).autocomplete(&app);
     Runtime(ColumnTestApp).navigate(&app, 1);
-    try std.testing.expectEqualStrings("/provider co", app.input_runtime.edit_state.input.items);
+    try std.testing.expectEqualStrings("/provider un", app.input_runtime.edit_state.input.items);
     try std.testing.expectEqual(@as(usize, 2), app.input_runtime.picker.provider_column_index);
 
     app.auth.inventory_refresh_active = false;
-    const ready = columnFor(&app, .provider, "co");
+    const ready = columnFor(&app, .provider, "un");
     try std.testing.expectEqual(@as(usize, 1), ready.count);
-    try std.testing.expectEqualStrings("codex", ready.labels[0]);
+    try std.testing.expectEqualStrings("unlid", ready.labels[0]);
     try Runtime(ColumnTestApp).autocomplete(&app);
-    try std.testing.expectEqualStrings("/provider codex", app.input_runtime.edit_state.input.items);
+    try std.testing.expectEqualStrings("/provider unlid", app.input_runtime.edit_state.input.items);
 }
 
 test "method column marks the credential the active provider is using" {

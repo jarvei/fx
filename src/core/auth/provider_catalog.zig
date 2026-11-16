@@ -72,6 +72,25 @@ pub fn label(id: model_provider.ProviderId) []const u8 {
     return find(id).route_name;
 }
 
+/// A provider's name for messages: a configured connection's own name, borrowed
+/// from the caller's value, or the catalog's route name for a factory one. The
+/// pointer keeps the borrowed name from pointing at a copy that dies with the
+/// call, which is what a by-value parameter would return.
+///
+/// Fork: the profile's own connections are the only providers this build
+/// offers, so every notice names the connection instead of "Configured
+/// provider".
+pub fn displayName(id: *const model_provider.ProviderId) []const u8 {
+    return if (id.* == .configured) id.label() else find(id.*).route_name;
+}
+
+test "display name names a configured connection" {
+    var configured = model_provider.parse("unlid").?;
+    try std.testing.expectEqualStrings("unlid", displayName(&configured));
+    var factory: model_provider.ProviderId = .gateway;
+    try std.testing.expectEqualStrings("Vercel AI Gateway", displayName(&factory));
+}
+
 test "auth provider catalog uses the model provider identity and explicit aliases" {
     try std.testing.expectEqual(model_provider.ProviderId.gateway, parse("vercel").?);
     try std.testing.expectEqual(model_provider.ProviderId.gateway, parse("gateway").?);

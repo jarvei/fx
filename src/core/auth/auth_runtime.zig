@@ -510,7 +510,7 @@ pub fn preparationFailureNotice(err: anyerror) ?[]const u8 {
 
 /// Returns an owned, secret-free explanation shared by activation surfaces.
 pub fn preparationFailureText(alloc: Allocator, provider: model_provider.ProviderId, err: anyerror) ![]u8 {
-    const label = provider_catalog.label(provider);
+    const label = provider_catalog.displayName(&provider); // Fork: names the connection.
     if (err == error.ConfiguredProviderChanged or err == error.ConfiguredProviderRemoved) return alloc.print("{s}: {s}", .{ label, preparationFailureNotice(err).? });
     const failure = classifyCredentialFailure(provider_catalog.find(provider).login_source, err);
     const normalized = preparationError(failure) orelse return alloc.print("{s} requires a new sign-in.", .{label});
