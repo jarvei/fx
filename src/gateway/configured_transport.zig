@@ -385,6 +385,9 @@ pub fn parseModelIds(alloc: Allocator, body: []const u8) Allocator.Error!ModelsR
             else => continue,
         };
         definitions.validate_model_id(id) catch continue;
+        // Keep chat models only: the server's metadata.tags is the only
+        // field that says what an id is for.
+        if (!isTextModel(id, entry)) continue;
         const slot = try seen.getOrPut(alloc, id);
         if (slot.found_existing) continue;
         const owned = try alloc.dupe(u8, id);
@@ -394,6 +397,43 @@ pub fn parseModelIds(alloc: Allocator, body: []const u8) Allocator.Error!ModelsR
         slot.key_ptr.* = owned;
     }
     return .{ .ids = ids };
+}
+
+/// True when the model list entry is a chat model. `metadata.tags` decides it
+/// when the server sends them; servers that send none (DashScope) fall back to
+/// the shape of the id.
+fn isTextModel(id: []const u8, entry: std.json.Value) bool {
+    if (entry.object.get("metadata")) |metadata| {
+        if (metadata == .object) {
+            if (metadata.object.get("tags")) |tags| {
+                if (tags == .array) {
+                    for (tags.array.items) |tag| {
+                        if (tag == .string and std.mem.eql(u8, tag.string, "chat")) return true;
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+    const non_text_markers = [_][]const u8{
+        "image", "tts",  "asr",      "audio",      "embed",
+        "realtime", "livetranslate", "s2s", "wan", "z-image",
+        "ocr",   "tingwu", "omni",
+    };
+    for (non_text_markers) |marker| {
+        if (containsIgnoreCase(id, marker)) return false;
+    }
+    return true;
+}
+
+/// `std.mem.indexOf` with ASCII case folding; model ids are short and ASCII.
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or needle.len > haystack.len) return false;
+    var index: usize = 0;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[index..][0..needle.len], needle)) return true;
+    }
+    return false;
 }
 
 test "model list ids keep the server's order, drop repeats, and skip entries with no usable id" {
