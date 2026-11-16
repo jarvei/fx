@@ -45,8 +45,8 @@ Cada bloque lleva el comentario `Fork:` en el sitio exacto, para encontrarlo con
 ## Binario publicado
 
 `bin/fx-0.0.17-x86_64-linux` es el binario que corresponde a la rama `main` de
-este fork: estático (musl), sin símbolos, 14.395.752 B, sha256
-`702871435641cd164c4574fa10fcc777714a95bd683a6812776005af9bb04bfc`, y su
+este fork: estático (musl), sin símbolos, 14.397.000 B, sha256
+`7474f8d01cb19b0ff65012a24ed7a875370de821387429750508c64ae866da2f`, y su
 `build_revision` es el commit con el que se compiló. El manifiesto está en
 `bin/SHA256SUMS`; se comprueba con `cd bin && sha256sum -c SHA256SUMS`.
 
