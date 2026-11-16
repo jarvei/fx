@@ -42,6 +42,26 @@ e2e de `tests/e2e/configured-providers.test.ts` en cada rebase.
 Cada bloque lleva el comentario `Fork:` en el sitio exacto, para encontrarlo con
 `grep -rn "Fork:" src/`.
 
+## Binario publicado
+
+`bin/fx-0.0.17-x86_64-linux` es el binario que corresponde a la rama `main` de
+este fork: estático (musl), sin símbolos, 14.395.752 B, sha256
+`702871435641cd164c4574fa10fcc777714a95bd683a6812776005af9bb04bfc`, y su
+`build_revision` es el commit con el que se compiló. El manifiesto está en
+`bin/SHA256SUMS`; se comprueba con `cd bin && sha256sum -c SHA256SUMS`.
+
+Se compila así, desde la raíz del repo:
+
+```bash
+zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux
+cp zig-out/bin/fx bin/fx-<versión>-x86_64-linux
+```
+
+El `build_revision` que embebe sale del commit que esté en `HEAD` al compilar:
+si se compila antes de commitear el parche, el binario declara el commit de
+upstream. Hay que recompilar y reinstalar después del commit, y comprobarlo con
+`fx status --json` (`build_revision`) contra `git rev-parse --short=12 HEAD`.
+
 ## Comprobaciones tras reaplicar
 
 ```bash
